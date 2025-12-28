@@ -40,6 +40,11 @@ MIN_DELTA   = 16.0
 # 포지션당 사용할 증거금 비율: 전체 계좌를 3.5등분
 MARGIN_DIVISOR = 3.5
 
+# ===== BE SL(수수료권 SL 상향) 설정 =====
+BE_R_THRESHOLD = 0.6
+FEE_PCT = 0.001 * 10   # 수수료(0.1%)
+BE_PCT  = 0.0011  # 수수료권(0.11%)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
@@ -341,6 +346,7 @@ def main():
             "leverage": None,
             "margin": None,
             "notional": None,
+            "be_sl_applied": False,  # 추가: BE SL 적용 여부
         }
         for sym in SYMBOLS
     }
@@ -387,6 +393,7 @@ def main():
                         "leverage": None,
                         "margin": None,
                         "notional": None,
+                        "be_sl_applied": False,
                     }
                 else:
                     pos_state[sym]["side"] = exch_positions[sym]["side"]
@@ -416,6 +423,61 @@ def main():
                     bb_upper * (1 - TP_OFFSET) if side == "long" else bb_lower * (1 + TP_OFFSET)
                 )
 
+                # ====== (추가) 조건부 BE SL: 기대손익비<=0.6 & 가격이 수수료(0.1%)~TP 사이 ====== #
+                try:
+                    if not pos_state[sym].get("be_sl_applied", False):
+                        entry_price = pos_state[sym].get("entry_price")
+                        stop_price = pos_state[sym].get("stop_price")
+                        tp_price = pos_state[sym].get("tp_price")
+
+                        if entry_price and stop_price and tp_price:
+                            stop_diff = abs(entry_price - stop_price)
+                            tp_diff = abs(tp_price - entry_price)
+                            if stop_diff > 0:
+                                R_now = tp_diff / stop_diff
+
+                                if R_now <= BE_R_THRESHOLD:
+                                    if side == "long":
+                                        fee_line = entry_price * (1 + FEE_PCT)   # +0.1%
+                                        be_sl    = entry_price * (1 + BE_PCT)    # +0.11%
+                                        in_range = (fee_line <= curr_price <= tp_price)
+                                        sl_side = "sell"
+                                        better_than_current = (stop_price < be_sl)
+                                    else:
+                                        fee_line = entry_price * (1 - FEE_PCT)   # -0.1%
+                                        be_sl    = entry_price * (1 - BE_PCT)    # -0.11%
+                                        in_range = (tp_price <= curr_price <= fee_line)
+                                        sl_side = "buy"
+                                        better_than_current = (stop_price > be_sl)
+
+                                    if in_range and better_than_current:
+                                        if pos_state[sym]["stop_order_id"]:
+                                            try:
+                                                exchange.cancel_order(pos_state[sym]["stop_order_id"], sym)
+                                            except Exception:
+                                                pass
+
+                                        try:
+                                            sl_order = exchange.create_order(
+                                                sym,
+                                                "market",
+                                                sl_side,
+                                                size,
+                                                params={
+                                                    "tdMode": "cross",
+                                                    "reduceOnly": True,
+                                                    "stopLossPrice": be_sl,
+                                                },
+                                            )
+                                            pos_state[sym]["stop_order_id"] = sl_order.get("id")
+                                            pos_state[sym]["stop_price"] = be_sl
+                                            pos_state[sym]["be_sl_applied"] = True
+                                        except Exception:
+                                            pass
+                except Exception:
+                    pass
+                # ============================================================================== #
+
                 if side == "long" and curr_price >= pos_state[sym]["tp_price"]:
                     if pos_state[sym]["stop_order_id"]:
                         try:
@@ -442,6 +504,7 @@ def main():
                         "leverage": None,
                         "margin": None,
                         "notional": None,
+                        "be_sl_applied": False,
                     }
 
                 elif side == "short" and curr_price <= pos_state[sym]["tp_price"]:
@@ -470,6 +533,7 @@ def main():
                         "leverage": None,
                         "margin": None,
                         "notional": None,
+                        "be_sl_applied": False,
                     }
 
             # --- 신규 진입 --- #
@@ -561,6 +625,7 @@ def main():
                 pos_state[sym]["leverage"] = after.get("leverage")
                 pos_state[sym]["margin"] = after.get("margin")
                 pos_state[sym]["notional"] = after.get("notional")
+                pos_state[sym]["be_sl_applied"] = False
 
                 try:
                     sl_order = exchange.create_order(

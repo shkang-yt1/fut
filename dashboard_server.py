@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from starlette.websockets import WebSocketDisconnect
 
-STATE_PATH = "/app/bot_state.json"
+STATE_PATH = "/app/state/bot_state.json"
 
 app = FastAPI()
 

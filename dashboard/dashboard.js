@@ -240,15 +240,96 @@ function renderPosition(posState) {
     posEl.innerHTML = html;
 }
 
-function renderLogs(state) {
+function renderPositionHistory(positionHistory) {
     if (!logsEl) return;
-    const lastSignal = state.last_signal || {};
-    if (Object.keys(lastSignal).length === 0) {
-        logsEl.textContent = "{}";
+
+    if (!Array.isArray(positionHistory) || positionHistory.length === 0) {
+        logsEl.innerHTML = `<div class="text-gray-400 text-sm">포지션 히스토리가 없습니다.</div>`;
         return;
     }
-    logsEl.textContent = JSON.stringify(lastSignal, null, 2);
+
+    const rows = positionHistory
+        .filter(r => r && r.entry_time)
+        .slice();
+
+    // 진입시간 기준 내림차순(안전)
+    rows.sort((a, b) => {
+        const ta = new Date(a.entry_time).getTime();
+        const tb = new Date(b.entry_time).getTime();
+        return (tb || 0) - (ta || 0);
+    });
+
+    const top = rows.slice(0, 10);
+
+    let html = `
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-xs sm:text-sm text-left border-collapse">
+          <thead>
+            <tr class="border-b border-gray-700 bg-gray-900/40">
+              <th class="px-2 py-1 sm:px-3 sm:py-2">진입시간</th>
+              <th class="px-2 py-1 sm:px-3 sm:py-2">청산시간</th>
+              <th class="px-2 py-1 sm:px-3 sm:py-2">심볼</th>
+              <th class="px-2 py-1 sm:px-3 sm:py-2 text-right">레버리지</th>
+              <th class="px-2 py-1 sm:px-3 sm:py-2">방향</th>
+              <th class="px-2 py-1 sm:px-3 sm:py-2 text-right">진입가</th>
+              <th class="px-2 py-1 sm:px-3 sm:py-2 text-right">청산가</th>
+              <th class="px-2 py-1 sm:px-3 sm:py-2 text-right">최종 손익비</th>
+              <th class="px-2 py-1 sm:px-3 sm:py-2 text-right">수익금</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+
+    for (const r of top) {
+        const displaySymbol = r.symbol ? r.symbol.split("/")[0] : "-";
+
+        const sideLabel = r.side === "long" ? "롱" : (r.side === "short" ? "숏" : "-");
+        const sideColor =
+            r.side === "long"
+                ? "text-green-400"
+                : r.side === "short"
+                ? "text-red-400"
+                : "text-gray-300";
+
+        const lev = r.leverage;
+        const levText =
+            lev !== null && lev !== undefined && !isNaN(Number(lev))
+                ? `${Number(lev).toFixed(2)}x`
+                : "-";
+
+        const rr = r.final_rr;
+        const rrText =
+            rr !== null && rr !== undefined && !isNaN(Number(rr))
+                ? `${Number(rr).toFixed(2)} R`
+                : "-";
+
+        const pnlText = fmtSignedUSDT(r.pnl_usdt);
+
+        html += `
+          <tr class="border-b border-gray-800 hover:bg-gray-900/40">
+            <td class="px-2 py-1 sm:px-3 sm:py-2 whitespace-nowrap text-gray-300">${fmtDateTime(r.entry_time)}</td>
+            <td class="px-2 py-1 sm:px-3 sm:py-2 whitespace-nowrap text-gray-300">${fmtDateTime(r.close_time)}</td>
+            <td class="px-2 py-1 sm:px-3 sm:py-2 whitespace-nowrap text-gray-200">${displaySymbol}</td>
+            <td class="px-2 py-1 sm:px-3 sm:py-2 text-right text-gray-100">${levText}</td>
+            <td class="px-2 py-1 sm:px-3 sm:py-2 whitespace-nowrap ${sideColor} font-semibold">${sideLabel}</td>
+            <td class="px-2 py-1 sm:px-3 sm:py-2 text-right text-gray-100">${fmtNumber(r.entry_price)}</td>
+            <td class="px-2 py-1 sm:px-3 sm:py-2 text-right text-gray-100">${fmtNumber(r.close_price)}</td>
+            <td class="px-2 py-1 sm:px-3 sm:py-2 text-right text-gray-100">${rrText}</td>
+            <td class="px-2 py-1 sm:px-3 sm:py-2 text-right text-gray-100">${pnlText}</td>
+          </tr>
+        `;
+    }
+
+    html += `
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    logsEl.innerHTML = html;
 }
+
+
 
 // =====================
 // 캔들 매핑
@@ -723,7 +804,7 @@ function handleStateUpdate(state) {
     const posState = state.pos_state || {};
     renderPosition(posState);
 
-    renderLogs(state);
+    renderPositionHistory(state.position_history || []);
 
     const ohlcv = state.ohlcv || {};
     for (const sym of SYMBOLS) {

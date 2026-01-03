@@ -45,6 +45,9 @@ BE_R_THRESHOLD = 0.6
 FEE_PCT = 0.001 * 10   # 수수료(0.1%)
 BE_PCT  = 0.0011  # 수수료권(0.11%)
 
+# ===== (추가) 같은 방향 연속 손절 기반 엔트리 리스트릭션 =====
+SL_STREAK_THRESHOLD = 2  # 같은 방향 손절 N번 연속이면 반대만 허용
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # ===== 상태 파일(스냅샷) =====
@@ -94,6 +97,11 @@ def _default_pos_state():
     }
 
 
+def _default_sl_streak():
+    """코인별/방향별 연속 손절 카운트 기본값."""
+    return {sym: {"long": 0, "short": 0} for sym in SYMBOLS}
+
+
 def _hydrate_pos_state(saved_pos_state: dict):
     """bot_state.json에 저장된 pos_state(직렬화된 dict)를 런타임 구조로 복원."""
     pos_state = _default_pos_state()
@@ -122,6 +130,24 @@ def _hydrate_pos_state(saved_pos_state: dict):
     return pos_state
 
 
+def _hydrate_sl_streak(saved: dict):
+    """bot_state.json에 저장된 sl_streak를 런타임 구조로 복원."""
+    streak = _default_sl_streak()
+    if not isinstance(saved, dict):
+        return streak
+    for sym in SYMBOLS:
+        s = saved.get(sym)
+        if not isinstance(s, dict):
+            continue
+        for k in ("long", "short"):
+            try:
+                v = s.get(k, 0)
+                streak[sym][k] = int(v) if v is not None else 0
+            except Exception:
+                streak[sym][k] = 0
+    return streak
+
+
 def load_boot_state():
     """
     재시작 시 bot_state.json에서 다음 필드를 복구:
@@ -129,6 +155,7 @@ def load_boot_state():
       - position_history (최근 10개)
       - entry_restrict
       - last_signal (last_signal_candle_ts)
+      - sl_streak (코인별/방향별 연속 손절 카운트)  (추가)
     """
     try:
         if not os.path.exists(STATE_PATH):
@@ -161,6 +188,8 @@ def load_boot_state():
             boot["last_signal"] = out
         else:
             boot["last_signal"] = {}
+
+        boot["sl_streak"] = _hydrate_sl_streak(state.get("sl_streak", {}))
 
         return boot
     except Exception:
@@ -321,7 +350,7 @@ def _serialize_pos_state(pos_state: dict):
     return out
 
 
-def save_state(pos_state, entry_restrict, last_signal, equity, ohlcv, position_history=None):
+def save_state(pos_state, entry_restrict, last_signal, equity, ohlcv, position_history=None, sl_streak=None):
     state = {
         "pos_state": _serialize_pos_state(pos_state),
         "entry_restrict": entry_restrict,
@@ -329,6 +358,7 @@ def save_state(pos_state, entry_restrict, last_signal, equity, ohlcv, position_h
         "equity": equity,
         "ohlcv": ohlcv,
         "position_history": position_history or [],
+        "sl_streak": sl_streak or _default_sl_streak(),  # (추가)
         "timestamp": datetime.utcnow().isoformat(),
     }
     os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
@@ -544,6 +574,64 @@ def _safe_float(v):
         return None
 
 
+# =========================
+# (추가) 연속 손절 카운트/리스트릭션 처리
+# =========================
+def _reset_sl_streak_for_symbol(sl_streak: dict, sym: str):
+    try:
+        sl_streak[sym]["long"] = 0
+        sl_streak[sym]["short"] = 0
+    except Exception:
+        pass
+
+
+def _apply_sl_streak_on_close(sl_streak: dict, entry_restrict: dict, sym: str, side: str, exit_reason: str):
+    """
+    - exit_reason == "SL" 일 때만 해당 방향 카운트를 증가
+    - 손절이 아닌 종료(TP/BE/MANUAL 등)는 연속 손절을 끊는 것으로 보고 카운트 초기화
+    - 같은 방향 손절이 SL_STREAK_THRESHOLD 이상이면 반대만 허용
+        * short 2연속 SL -> long_only
+        * long  2연속 SL -> short_only
+    """
+    try:
+        if sym not in sl_streak:
+            return
+
+        if exit_reason != "SL":
+            _reset_sl_streak_for_symbol(sl_streak, sym)
+            return
+
+        if side == "short":
+            sl_streak[sym]["short"] = int(sl_streak[sym].get("short", 0)) + 1
+            sl_streak[sym]["long"] = 0
+            if sl_streak[sym]["short"] >= SL_STREAK_THRESHOLD:
+                entry_restrict[sym] = "long_only"
+        elif side == "long":
+            sl_streak[sym]["long"] = int(sl_streak[sym].get("long", 0)) + 1
+            sl_streak[sym]["short"] = 0
+            if sl_streak[sym]["long"] >= SL_STREAK_THRESHOLD:
+                entry_restrict[sym] = "short_only"
+    except Exception:
+        pass
+
+
+def _apply_sl_streak_on_entry(sl_streak: dict, sym: str, entry_side: str):
+    """
+    "포지션 진입하면 카운트 초기화"를 '연속성'을 해치지 않는 방식으로 반영:
+      - 같은 방향으로 재도전할 땐(연속 손절을 확인해야 하므로) 해당 방향 카운트는 유지
+      - 방향을 바꿔 진입하면 이전 방향 연속 손절은 끊긴 것으로 보고 반대 카운트는 0으로 초기화
+    """
+    try:
+        if sym not in sl_streak:
+            return
+        if entry_side == "long":
+            sl_streak[sym]["short"] = 0
+        elif entry_side == "short":
+            sl_streak[sym]["long"] = 0
+    except Exception:
+        pass
+
+
 def main():
     exchange = init_exchange()
     logging.info("CCI + Bollinger 자동매매 (동적 TP + BB/CCI 대시보드 + 균등 증거금/리스크) 시작")
@@ -552,6 +640,9 @@ def main():
     entry_restrict = {sym: None for sym in SYMBOLS}
     last_signal_candle_ts = {}
     position_history_cache = load_position_history_cache(POSITION_HISTORY_PATH, POSITION_HISTORY_LIMIT)
+
+    # (추가) 코인별/방향별 연속 손절 카운트
+    sl_streak = _default_sl_streak()
 
     boot = load_boot_state()
     if boot:
@@ -562,7 +653,12 @@ def main():
             ph = boot.get("position_history", [])
             if isinstance(ph, list) and ph:
                 position_history_cache = ph[:POSITION_HISTORY_LIMIT]
-            logging.info("재시작 동기화 완료: pos_state/entry_restrict/last_signal/position_history 복구")
+
+            ss = boot.get("sl_streak")
+            if isinstance(ss, dict):
+                sl_streak = ss
+
+            logging.info("재시작 동기화 완료: pos_state/entry_restrict/last_signal/position_history/sl_streak 복구")
         except Exception:
             pass
 
@@ -586,6 +682,7 @@ def main():
 
             for sym in SYMBOLS:
                 if not exch_positions[sym]["has_position"]:
+                    # 포지션이 사라진 경우(주로 SL/BE 또는 수동 청산) 히스토리 기록 + 연속손절 카운트 갱신
                     if pos_state[sym].get("side") is not None and (pos_state[sym].get("size") or 0) > 0:
                         try:
                             close_price = None
@@ -593,15 +690,20 @@ def main():
                                 close_price = float(data[sym][2]["close"])
                             close_time = datetime.now(timezone.utc)
                             exit_reason = _infer_exit_reason(pos_state[sym])
+
+                            # (추가) 연속 손절 기반 엔트리 리스트릭션 적용
+                            _apply_sl_streak_on_close(
+                                sl_streak=sl_streak,
+                                entry_restrict=entry_restrict,
+                                sym=sym,
+                                side=pos_state[sym].get("side"),
+                                exit_reason=exit_reason,
+                            )
+
                             rec = _build_history_record(exchange, sym, pos_state[sym], close_price, close_time, exit_reason)
                             append_position_history(position_history_cache, rec)
                         except Exception:
                             pass
-
-                    if pos_state[sym]["side"] == "long":
-                        entry_restrict[sym] = None
-                    elif pos_state[sym]["side"] == "short":
-                        entry_restrict[sym] = None
 
                     pos_state[sym] = {
                         "side": None,
@@ -709,6 +811,10 @@ def main():
                         except Exception:
                             _cp = None
                         close_price = float(_cp) if _cp is not None else curr_price
+
+                        # (추가) TP는 연속 손절을 끊는다
+                        _apply_sl_streak_on_close(sl_streak, entry_restrict, sym, side="long", exit_reason="TP")
+
                         rec = _build_history_record(exchange, sym, pos_state[sym], close_price, close_time, "TP")
                         append_position_history(position_history_cache, rec)
                     except Exception:
@@ -737,6 +843,10 @@ def main():
                         except Exception:
                             _cp = None
                         close_price = float(_cp) if _cp is not None else curr_price
+
+                        # (추가) TP는 연속 손절을 끊는다
+                        _apply_sl_streak_on_close(sl_streak, entry_restrict, sym, side="short", exit_reason="TP")
+
                         rec = _build_history_record(exchange, sym, pos_state[sym], close_price, close_time, "TP")
                         append_position_history(position_history_cache, rec)
                     except Exception:
@@ -826,6 +936,9 @@ def main():
                 pos_state[sym]["notional"] = after.get("notional")
                 pos_state[sym]["be_sl_applied"] = False
 
+                # (추가) 진입 시 카운트 초기화(방향 전환 시 반대 카운트 0)
+                _apply_sl_streak_on_entry(sl_streak, sym, side_signal)
+
                 try:
                     sl_order = exchange.create_order(
                         sym, "market", sl_side, actual_size,
@@ -860,7 +973,7 @@ def main():
                 ohlcv_state[sym] = candles
 
             _, total = fetch_futures_equity(exchange)
-            save_state(pos_state, entry_restrict, last_signal_candle_ts, total, ohlcv_state, position_history_cache)
+            save_state(pos_state, entry_restrict, last_signal_candle_ts, total, ohlcv_state, position_history_cache, sl_streak)
 
             time.sleep(LOOP_INTERVAL)
 

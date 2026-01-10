@@ -605,7 +605,7 @@ def main():
                 df = calculate_indicators(df)
                 if len(df) < BB_PERIOD + 3:
                     continue
-                data[sym] = (df, df.iloc[-3], df.iloc[-1])
+                data[sym] = (df, df.iloc[-2], df.iloc[-1])
 
             if not data:
                 time.sleep(LOOP_INTERVAL)
@@ -673,6 +673,7 @@ def main():
                 bb_lower = float(curr["bb_lower"])
                 curr_price = float(curr["close"])
                 curr_cci = float(curr["cci"])
+                prev_cci = float(prev["cci"])
 
                 pos_state[sym]["tp_price"] = (bb_upper * (1 - TP_OFFSET) if side == "long" else bb_lower * (1 + TP_OFFSET))
 
@@ -722,7 +723,7 @@ def main():
                 except Exception:
                     pass
 
-                if (side == "long" and curr_price >= pos_state[sym]["tp_price"]) or (side == "long" and curr_cci >= 100):
+                if (side == "long" and curr_price >= pos_state[sym]["tp_price"]) or (side == "long" and (prev_cci >= 110) and (prev_cci - curr_cci >= 15)):
                     if pos_state[sym]["stop_order_id"]:
                         try:
                             exchange.cancel_order(pos_state[sym]["stop_order_id"], sym)
@@ -751,7 +752,7 @@ def main():
                     symbol_risk[sym] = BASE_RISK
                     pos_state[sym] = _default_pos_state()[sym]
 
-                elif (side == "short" and curr_price <= pos_state[sym]["tp_price"]) or (side == "short" and curr_cci <= -100):
+                elif (side == "short" and curr_price <= pos_state[sym]["tp_price"]) or (side == "short" and (prev_cci <= -110) and (curr_cci - prev_cci >= 15)):
                     if pos_state[sym]["stop_order_id"]:
                         try:
                             exchange.cancel_order(pos_state[sym]["stop_order_id"], sym)

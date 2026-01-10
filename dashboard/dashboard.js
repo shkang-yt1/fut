@@ -68,15 +68,16 @@ function fmtDateTime(value) {
     return `${yyyy}/${MM}/${DD}<br/>${hh}:${mm}:${ss}`;
 }
 
-function renderEntryRestriction(entryRestrict) {
+function renderSymbolRisk(symbolRisk) {
     if (!entryRestrictEl) return;
-    if (!entryRestrict) {
+    if (!symbolRisk) {
         entryRestrictEl.textContent = "-";
         return;
     }
     const lines = SYMBOLS.map(sym => {
-        const v = entryRestrict[sym];
-        return `${sym}:  ${v ? v : "-"}`;
+        const risk = symbolRisk[sym];
+        const riskPct = risk ? (Number(risk) * 100).toFixed(2) : "0.00";
+        return `${sym.padEnd(16)}:  ${riskPct}%`;
     });
     entryRestrictEl.textContent = lines.join("\n");
 }
@@ -799,7 +800,7 @@ function handleStateUpdate(state) {
         equityEl.textContent = fmtUSDT(state.equity);
     }
 
-    renderEntryRestriction(state.entry_restrict);
+    renderSymbolRisk(state.symbol_risk);
 
     const posState = state.pos_state || {};
     renderPosition(posState);

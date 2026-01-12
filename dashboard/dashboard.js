@@ -241,6 +241,7 @@ function renderPosition(posState) {
     posEl.innerHTML = html;
 }
 
+
 function renderPositionHistory(positionHistory) {
     if (!logsEl) return;
 
@@ -251,16 +252,9 @@ function renderPositionHistory(positionHistory) {
 
     const rows = positionHistory
         .filter(r => r && r.entry_time)
-        .slice();
-
-    // 진입시간 기준 내림차순(안전)
-    rows.sort((a, b) => {
-        const ta = new Date(a.entry_time).getTime();
-        const tb = new Date(b.entry_time).getTime();
-        return (tb || 0) - (ta || 0);
-    });
-
-    const top = rows.slice(0, 10);
+        .slice()
+        .sort((a, b) => new Date(b.entry_time) - new Date(a.entry_time))
+        .slice(0, 10);
 
     let html = `
       <div class="overflow-x-auto">
@@ -281,7 +275,7 @@ function renderPositionHistory(positionHistory) {
           <tbody>
     `;
 
-    for (const r of top) {
+    for (const r of rows) {
         const displaySymbol = r.symbol ? r.symbol.split("/")[0] : "-";
 
         const sideLabel = r.side === "long" ? "롱" : (r.side === "short" ? "숏" : "-");
@@ -292,19 +286,26 @@ function renderPositionHistory(positionHistory) {
                 ? "text-red-400"
                 : "text-gray-300";
 
-        const lev = r.leverage;
         const levText =
-            lev !== null && lev !== undefined && !isNaN(Number(lev))
-                ? `${Number(lev).toFixed(2)}x`
+            r.leverage !== null && !isNaN(r.leverage)
+                ? `${Number(r.leverage).toFixed(2)}x`
                 : "-";
 
-        const rr = r.final_rr;
         const rrText =
-            rr !== null && rr !== undefined && !isNaN(Number(rr))
-                ? `${Number(rr).toFixed(2)} R`
+            r.final_rr !== null && !isNaN(r.final_rr)
+                ? `${Number(r.final_rr).toFixed(2)} R`
                 : "-";
 
-        const pnlText = fmtSignedUSDT(r.pnl_usdt);
+        const pnl = Number(r.pnl_usdt);
+        const pnlText = fmtSignedUSDT(pnl);
+
+        // TP / SL 과 동일한 톤
+        const pnlColor =
+            pnl > 0
+                ? "text-teal-300"
+                : pnl < 0
+                ? "text-red-300"
+                : "text-gray-300";
 
         html += `
           <tr class="border-b border-gray-800 hover:bg-gray-900/40">
@@ -316,7 +317,7 @@ function renderPositionHistory(positionHistory) {
             <td class="px-2 py-1 sm:px-3 sm:py-2 text-right text-gray-100">${fmtNumber(r.entry_price)}</td>
             <td class="px-2 py-1 sm:px-3 sm:py-2 text-right text-gray-100">${fmtNumber(r.close_price)}</td>
             <td class="px-2 py-1 sm:px-3 sm:py-2 text-right text-gray-100">${rrText}</td>
-            <td class="px-2 py-1 sm:px-3 sm:py-2 text-right text-gray-100">${pnlText}</td>
+            <td class="px-2 py-1 sm:px-3 sm:py-2 text-right ${pnlColor}">${pnlText}</td>
           </tr>
         `;
     }
@@ -329,8 +330,6 @@ function renderPositionHistory(positionHistory) {
 
     logsEl.innerHTML = html;
 }
-
-
 
 // =====================
 // 캔들 매핑

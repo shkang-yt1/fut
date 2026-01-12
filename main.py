@@ -45,8 +45,8 @@ MARGIN_DIVISOR = 3.5
 
 # ===== BE SL(수수료권 SL 상향) 설정 =====
 BE_R_THRESHOLD = 0.6
-FEE_PCT = 0.001 * 10   # 수수료(0.1%)
-BE_PCT  = 0.0011  # 수수료권(0.11%)
+FEE_PCT = 0.001   # 수수료(0.1%)
+BE_PCT  = 0.0012  # 수수료권(0.11%)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
